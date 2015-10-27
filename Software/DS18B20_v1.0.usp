@@ -1,0 +1,511 @@
+/*******************************************************************************************
+  SIMPL+ Module Information
+  (Fill in comments below)
+*******************************************************************************************/
+/*
+Dealer Name:
+System Name:
+System Number:
+Programmer:
+Comments:
+*/
+
+/*******************************************************************************************
+  Compiler Directives
+  (Uncomment and declare compiler directives as needed)
+*******************************************************************************************/
+// #ENABLE_DYNAMIC
+#SYMBOL_NAME "DS18B20 v1.0"
+// #HINT ""
+// #DEFINE_CONSTANT
+// #CATEGORY "" 
+#CATEGORY "4" // Device Interface
+// #PRINT_TO_TRACE
+// #DIGITAL_EXPAND 
+// #ANALOG_SERIAL_EXPAND InputsWithOutputs
+// #OUTPUT_SHIFT 
+// #HELP_PDF_FILE ""
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+// #ENCODING_ASCII
+// #ENCODING_UTF16
+// #ENCODING_INHERIT_FROM_PARENT
+// #ENCODING_INHERIT_FROM_PROGRAM
+
+#HELP_BEGIN
+© 2014 Dmytro Sholudko. All rights reserved.
+crestron.ua@gmail.com
+Website https://code.google.com/p/1wire-for-crestron/
+
+Version 1.0 Dated 04.06.2014
+
+Module for reading temperature values from DS18B20 sensors.
+
+Inputs:
+
+scan_addr: On rising edge receives sensor address and sends it into a serial join "scanned_addr".
+Only one sensor must be connected in this procedure! Polling must be switched off in this time.
+
+polling: When its value is high, module polling of the values of all sensors.
+
+rx$: It is a "rx$" serial join of the serial port.
+
+addr$[n]: Address of the sensor in 1-wire bus.
+
+Outputs:
+
+val_ok[n]: If it value is high, then connection with corresponding sensors is good and its value is correct.
+
+ComSpec$: This serial join must be connected to Device Extender "Packet Transmission" of serial ports slot.
+
+scanned_addr$: String with sensor address, received after pressing digital join "scan_addr".
+
+tx$: It is a "tx$" serial join of the serial port.
+
+val[n]: Temperature value of correcponding sensor. Value format XX.X.
+
+Parameters:
+
+port: Select the port to which the signals  rx$ and tx$ are connected.
+
+license: License key. Without license key module can work in demonstration mode during 1 hour.
+License key is associated with an address of first sensor.
+
+Commissioning:
+
+Firstly, you must connect each sensor separately and, pressing the "scan_addr" digital join, will get its address.
+Then you must paste this addresses in "Serial Send" symbol, connected to corresponding "addr$" serial join in module.
+Then after compiling and downloading you can switch on digital join "polling" and get temperature values from sensor.
+#HELP_END
+
+
+//#DEFINE_CONSTANT DEBUG 1
+#DEFINE_CONSTANT MAX_DEVICES 50
+
+/*******************************************************************************************
+  DIGITAL, ANALOG and SERIAL INPUTS and OUTPUTS
+  (Uncomment and declare inputs and outputs as needed)
+*******************************************************************************************/
+
+DIGITAL_INPUT _SKIP_, _SKIP_, scan_addr;
+DIGITAL_INPUT polling;
+// ANALOG_INPUT 
+
+BUFFER_INPUT rx$[65534];
+STRING_INPUT addr$[MAX_DEVICES][8];
+
+DIGITAL_OUTPUT _SKIP_, _SKIP_, val_ok[MAX_DEVICES];
+STRING_OUTPUT ComSpec$, scanned_addr$, tx$;
+ANALOG_OUTPUT val[MAX_DEVICES];
+
+/*******************************************************************************************
+  Parameters
+  (Uncomment and declare parameters as needed)
+*******************************************************************************************/
+INTEGER_PARAMETER port;
+// SIGNED_INTEGER_PARAMETER
+// LONG_INTEGER_PARAMETER
+// SIGNED_LONG_INTEGER_PARAMETER
+// STRING_PARAMETER
+
+/*******************************************************************************************
+  Parameter Properties
+  (Uncomment and declare parameter properties as needed)
+*******************************************************************************************/
+#BEGIN_PARAMETER_PROPERTIES port
+   // propValidUnits = // unitString or unitDecimal|unitHex|unitPercent|unitCharacter|unitTime|unitTicks;
+   // propDefaultUnit = // unitString, unitDecimal, unitHex, unitPercent, unitCharacter, unitTime or unitTicks;
+   // propBounds = lower_bound , upper_bound;
+   propDefaultValue = 0x80;  // or, propDefaultValue = "";
+   propList = 	{ 0x80 , "COM-1" },
+				{ 0x81 , "COM-2" },
+				{ 0x82 , "COM-3" },
+				{ 0x83 , "COM-4" },
+				{ 0x84 , "COM-5" },
+				{ 0x85 , "COM-6" };
+	propShortDescription = "COM-port";
+   // #BEGIN_PROP_FULL_DESCRIPTION  line_1...  line_2...  line_n  #END_PROP_FULL_DESCRIPTION
+   // #BEGIN_PROP_NOTES line_1...  line_2...  line_n  #END_PROP_NOTES
+#END_PARAMETER_PROPERTIES
+
+/*
+#BEGIN_PARAMETER_PROPERTIES parameter_variable, parameter_variable, ...
+   // propValidUnits = // unitString or unitDecimal|unitHex|unitPercent|unitCharacter|unitTime|unitTicks;
+   // propDefaultUnit = // unitString, unitDecimal, unitHex, unitPercent, unitCharacter, unitTime or unitTicks;
+   // propBounds = lower_bound , upper_bound;
+   // propDefaultValue = ;  // or, propDefaultValue = "";
+   // propList = // { "value" , "label" } , { "value" , "label" } , ... ;
+   // propShortDescription = "status_bar_hint_text";
+   // #BEGIN_PROP_FULL_DESCRIPTION  line_1...  line_2...  line_n  #END_PROP_FULL_DESCRIPTION
+   // #BEGIN_PROP_NOTES line_1...  line_2...  line_n  #END_PROP_NOTES
+#END_PARAMETER_PROPERTIES
+*/
+
+/*******************************************************************************************
+  Global Variables
+  (Uncomment and declare global variables as needed)
+  Note:  Be sure to initialize all declared STRING variables as needed
+         For example, in Function Main: myString = "";
+*******************************************************************************************/
+// INTEGER
+// LONG_INTEGER
+// SIGNED_INTEGER
+// SIGNED_LONG_INTEGER
+// STRING
+
+INTEGER DataReceived;
+INTEGER n_devices, cur_device;
+INTEGER license_ok;
+INTEGER start_minutes, start_day;
+/*******************************************************************************************
+  Functions
+  (Add any additional functions here)
+  Note:  Functions must be physically placed before the location in
+         the code that calls them.
+*******************************************************************************************/
+
+// 12 80 00 25 00 00 00
+function MakeSpec(byref string spec$, byval integer cspec)
+{	
+	makestring(spec$, "%c%c%c%c%c%c%c", 0x12, port, 0x00, LOW(cspec), HIGH(cspec), 0, 0x00);	
+}
+
+INTEGER_FUNCTION WaitDataReceived()
+{
+	integer i;
+
+	for(i=1 to 10 )
+	{
+		if( DataReceived = 1) return(1);
+      	delay(1);
+	}
+    return(0);
+}
+    
+INTEGER_FUNCTION TouchReset()
+{
+	integer cspec;
+	string spec$[7];
+	integer stat;
+
+	cspec=0;
+	cspec = cspec | 0x0005 | 0x0020; //9600
+	MakeSpec(spec$, cspec);
+	ComSpec$ = spec$;
+
+    delay(1);
+	DataReceived = 0;
+	clearbuffer(rx$);
+    tx$=chr(0xF0);
+
+	IF(WaitDataReceived() = 0)
+	{
+		stat = 0;
+		#IF_DEFINED DEBUG
+			trace("1-WIRE: TouchReset = ERROR: Shorted to Ground");			
+		#ENDIF
+	} ELSE IF (right(rx$,1) != chr(0xF0))
+	{
+		#IF_DEFINED DEBUG
+			trace("TouchReset = OK");			
+		#ENDIF
+		stat = 1;
+	} ELSE
+	{
+		stat = 0;
+		#IF_DEFINED DEBUG
+			trace("1-WIRE: TouchReset = ERROR: No device responding");			
+		#ENDIF
+	}
+
+    cspec=0;
+	cspec = cspec | 0x0086 | 0x0020; //115200
+	MakeSpec(spec$, cspec);
+	ComSpec$ = spec$;
+	return(stat);
+}
+ 
+INTEGER_FUNCTION TouchBits(integer nbits, integer outch)
+{
+	integer mask, inv, outByte, i, err;
+    integer inchar;
+
+	mask = 0x01;
+	inv = 0;
+    err = 0;
+
+    clearbuffer(rx$);
+	for(i=1 to nbits)
+	{
+		if((outch & mask) != 0) outByte = 0xFF; else outByte = 0x00;
+		DataReceived = 0;
+        tx$=chr(outByte);
+        IF(WaitDataReceived() = 0) err = 1;
+		ELSE
+		{
+			IF ((getc(rx$) & 0x01) != 0 ) inv = inv | mask;
+		}
+		mask = mask<<1;
+	}
+	
+	IF(err = 1)
+	{
+		#IF_DEFINED DEBUG
+			trace("1-WIRE: TouchBits ERROR");			
+		#ENDIF
+		return(-1);
+	} ELSE
+	{
+		#IF_DEFINED DEBUG
+			trace("1-WIRE: TouchBits = 0x%X",inv);			
+		#ENDIF
+		return(inv);
+	}
+}
+ 
+INTEGER_FUNCTION MatchROM(integer id)
+{
+	integer i, err;
+    string devAddr[8];
+    
+	err = 0;
+	IF(TouchReset()=0) return(0);
+	ELSE
+    {
+	    delay(1);
+		IF(TouchBits(8,0x55) = -1) return(0);
+		ELSE
+		{
+			delay(1);
+			devAddr = addr$[id];
+			FOR(i = 1 to 8)
+			{
+				IF(TouchBits(8,getc(devAddr)) = -1){ err = 1; break; }
+			}
+			IF(err = 0) return(1); ELSE return(0);
+		}
+	}
+}
+
+INTEGER_FUNCTION ReadScratchpad(integer id, ByRef integer scratchpad[])
+{
+	integer i, inv, err;
+     
+	err = 0;
+	IF(TouchBits(8,0xBE) = -1 ) return(0);
+	ELSE
+	{
+		delay(1);
+		for(i=1 to 9)
+		{
+			inv = TouchBits(8,0xFF);
+			IF(inv = -1 ) {err = 1; break;}
+			scratchpad[i] = inv;
+		}
+		IF(err != 0)
+		{
+			#IF_DEFINED DEBUG
+				trace("1-WIRE: ReadScratchpad Error");			
+			#ENDIF
+			return(0);
+		} 
+		ELSE
+		{
+			#IF_DEFINED DEBUG
+				trace("1-WIRE: ReadScratchpad = %X %X %X %X %X %X %X %X %X", scratchpad[1], scratchpad[2], scratchpad[3], scratchpad[4], scratchpad[5], scratchpad[6], scratchpad[7], scratchpad[8], scratchpad[9]);			
+			#ENDIF
+			return(1);
+		}
+	}
+}
+
+INTEGER_FUNCTION CalcCRC8(integer scratchpad[])
+{
+	integer a, b, i, j, crc;
+
+	crc=0;
+  	for(i=1 to getnumarraycols(scratchpad))
+  	{
+    	a = scratchpad[i];
+    	for(j=1 to 8)
+    	{
+      		b = a;
+      		a = a ^ crc;
+      		if(a & 1) crc = ((crc^0x18)>>1) | 0x80;
+      		else crc = crc >> 1;
+      		a = b >> 1;
+    	}
+  	}
+  	return(crc);
+}
+
+INTEGER_FUNCTION ReadTemp(integer id)
+{
+	integer scratchpad[9], err, tmp, t, lsb, msb;
+     
+	err = 0;
+	IF(MatchRom(id) = 0 ) err = 1;
+	ELSE IF(TouchBits(8,0x44) = -1 ) err = 1; //Convert temperature
+	ELSE
+	{
+		delay(100);
+	    IF(MatchRom(id) = 0 ) err = 1;
+		ELSE IF (ReadScratchpad(id,scratchpad) = 0) err = 1;
+		ELSE IF (CalcCRC8(scratchpad) != 0 ) err = 1;
+		ELSE
+		{			
+			IF((scratchpad[2]&128) = 0)
+			{
+				t = (((scratchpad[2]&7)<<4)|(scratchpad[1]>>4))*10 + (((scratchpad[1]&15)*10)>>4);
+			} ELSE
+			{
+				lsb = (not(scratchpad[1]))&0xFF;
+				msb = (not(scratchpad[2]))&0xFF;
+                t = (((msb&7)<<4)|(lsb>>4))*10 + (((lsb&15)*10)>>4);
+				t = t * (-1);
+			}
+		}
+	}
+	IF (err = 0)
+	{
+		val[id] = t;
+		val_ok[id] = 1;
+		return(1);
+	} ELSE
+	{
+		val[id] = 0;
+		val_ok[id] = 0;
+		return(0);
+	}
+}
+
+
+
+/*******************************************************************************************
+  Event Handlers
+  (Uncomment and declare additional event handlers as needed)
+*******************************************************************************************/         
+PUSH polling
+{
+	integer i;
+	cur_device = 1;
+	WHILE(1)
+	{
+		#IF_DEFINED DEBUG
+				trace("1-WIRE: Polling %d sensor", cur_device);			
+		#ENDIF
+		ReadTemp(cur_device);
+		IF(polling = 0)
+		{
+			FOR(i=1 TO n_devices)
+			{
+				val[i] = 0;
+				val_ok[i] = 0;
+			}
+			break;
+		}
+		delay(200);
+        
+		//Check license
+		IF(cur_device = 1) // Check license after reading 1-st sensor
+		{
+			IF(license_ok = 1 && val_ok[1])
+			{
+				IF(cur_device < n_devices) cur_device = cur_device + 1; ELSE cur_device = 1;
+				#IF_DEFINED DEBUG
+					trace("1-WIRE: Check license OK");			
+				#ENDIF
+			} ELSE
+			{
+				IF( (GetDateNum() = start_day) && ((GetHourNum()*60 + GetMinutesNum()) <= start_minutes + 60))
+				{
+					IF(cur_device < n_devices) cur_device = cur_device + 1; ELSE cur_device = 1;
+                    #IF_DEFINED DEBUG
+						trace("1-WIRE: Demo mode OK");			
+					#ENDIF
+				} ELSE
+				{
+					FOR(i=2 TO n_devices)
+					{
+						val[i] = 0;
+						val_ok[i] = 0;
+					}
+					trace("DS18B20: UNLICENSED");			
+				}
+			}
+		} ELSE
+		{
+			IF(cur_device < n_devices) cur_device = cur_device + 1; ELSE cur_device = 1;
+		}
+
+	}
+}
+
+PUSH scan_addr
+{
+	integer i, ok, inv;
+    string strAddr[8];
+            
+	IF(polling = 0)
+	{          
+		ok = 0;
+		IF( TouchReset() != 0)
+		{
+			delay(1);
+			IF( TouchBits(8,0x33) != -1)
+			{
+				ok = 1;
+			    for (i=1 to 8)
+				{
+					inv = TouchBits(8,0xFF);
+					IF (inv = -1) ok = 0;
+					strAddr = strAddr + chr(inv);
+				}
+			}
+		}
+		IF (ok = 0)
+		{
+			clearbuffer(strAddr);
+			strAddr = chr(0x00)+chr(0x00)+chr(0x00)+chr(0x00)+chr(0x00)+chr(0x00)+chr(0x00)+chr(0x00);
+		}
+		scanned_addr$ = strAddr;
+	}
+}
+
+CHANGE rx$
+{
+	DataReceived = 1;
+}
+
+/*******************************************************************************************
+  Main()
+  Uncomment and place one-time startup code here
+  (This code will get called when the system starts up)
+*******************************************************************************************/
+Function Main()
+{
+	integer i, dev_addr_lic[8], calc_lic, tmp;
+	string dev_addr_str[8];	
+
+	for (i=i to MAX_DEVICES)  // Check for the last position of address array
+	{
+		if (!IsSignalDefined(addr$[i]))
+		{
+			n_devices = i-1;
+			#IF_DEFINED DEBUG
+				trace("1-WIRE: Defined %d sensors", n_devices);			
+			#ENDIF
+			break;
+		}
+	}
+
+//Licensing
+	WaitForInitializationComplete();
+    license_ok = 1;
+
+	start_minutes = GetHourNum()*60 + GetMinutesNum();
+	start_day = GetDateNum();
+}
+
+
